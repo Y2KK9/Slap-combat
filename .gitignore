@@ -1,41 +1,290 @@
-# Compiled Lua sources
-luac.out
+--[[
+    killauar by:MN
+    功能：自动攻击、范围可调、全体攻击、无敌模式
+    UI：可拖动、可收起（仅剩展开按钮）、美观圆角设计
+    基于原Hit事件，无视冷却快速攻击
+]]
 
-# luarocks build files
-*.src.rock
-*.zip
-*.tar.gz
+-- 获取必要服务
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
 
-# Object files
-*.o
-*.os
-*.ko
-*.obj
-*.elf
+-- 本地玩家
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    LocalPlayer = Players:WaitForChild("RVVZ959") -- 备用，但通常LocalPlayer存在
+end
 
-# Precompiled Headers
-*.gch
-*.pch
+-- 配置参数（可调）
+local DEFAULT_RANGE = 25
+local ATTACK_COOLDOWN = 0.01   -- 攻击间隔（秒），比原冷却快得多
+local GODMODE_INTERVAL = 0.1    -- 无敌恢复间隔
 
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-*.def
-*.exp
+-- 状态变量
+local AutoAttackEnabled = false
+local Range = DEFAULT_RANGE
+local AttackAllEnabled = false
+local GodModeEnabled = false
 
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
+-- UI 元素
+local Gui = Instance.new("ScreenGui")
+local MainFrame = Instance.new("Frame")
+local TitleBar = Instance.new("TextButton")
+local CollapseBtn = Instance.new("TextButton")
+local ContentFrame = Instance.new("Frame")
+local AutoToggle = Instance.new("TextButton")
+local RangeInput = Instance.new("TextBox")
+local AttackAllToggle = Instance.new("TextButton")
+local GodModeToggle = Instance.new("TextButton")
+local ExpandBtn = Instance.new("TextButton")  -- 展开按钮（收起时显示）
 
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
+-- 拖动相关变量
+local Dragging = false
+local DragStartPos = Vector2.new()
+local FrameStartPos = Vector2.new()
+local ExpandDragging = false
+local ExpandDragStart = Vector2.new()
+local ExpandStartPos = Vector2.new()
+
+-- 初始化UI
+local function CreateUI()
+    Gui.Name = "KillauarGUI"
+    Gui.Parent = CoreGui
+    Gui.ResetOnSpawn = false
+    Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    Gui.DisplayOrder = 1000
+
+    -- 主框架（圆角、半透明、阴影）
+    MainFrame.Name = "MainFrame"
+    MainFrame.Parent = Gui
+    MainFrame.Size = UDim2.new(0, 260, 0, 240)
+    MainFrame.Position = UDim2.new(0.5, -130, 0.5, -120) -- 居中
+    MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+    MainFrame.BackgroundTransparency = 0.1
+    MainFrame.BorderSizePixel = 0
+    MainFrame.ClipsDescendants = true
+
+    -- 阴影效果
+    local Shadow = Instance.new("ImageLabel")
+    Shadow.Name = "Shadow"
+    Shadow.Parent = MainFrame
+    Shadow.BackgroundTransparency = 1
+    Shadow.Size = UDim2.new(1, 20, 1, 20)
+    Shadow.Position = UDim2.new(0, -10, 0, -10)
+    Shadow.Image = "rbxasset://textures/ui/Glow.png"
+    Shadow.ImageColor3 = Color3.new(0, 0, 0)
+    Shadow.ImageTransparency = 0.6
+    Shadow.ScaleType = Enum.ScaleType.Slice
+    Shadow.SliceCenter = Rect.new(10, 10, 10, 10)
+
+    -- 圆角
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 8)
+    UICorner.Parent = MainFrame
+
+    -- 标题栏（可拖动区域）
+    TitleBar.Name = "TitleBar"
+    TitleBar.Parent = MainFrame
+    TitleBar.Size = UDim2.new(1, 0, 0, 35)
+    TitleBar.Position = UDim2.new(0, 0, 0, 0)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+    TitleBar.BackgroundTransparency = 0.2
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Text = "killauar by:MN"
+    TitleBar.TextColor3 = Color3.fromRGB(220, 220, 255)
+    TitleBar.TextSize = 18
+    TitleBar.Font = Enum.Font.GothamBold
+    TitleBar.AutoButtonColor = false
+    TitleBar.ZIndex = 2
+
+    local TitleCorner = Instance.new("UICorner")
+    TitleCorner.CornerRadius = UDim.new(0, 8)
+    TitleCorner.Parent = TitleBar
+
+    -- 收起按钮（位于标题栏右侧）
+    CollapseBtn.Name = "CollapseBtn"
+    CollapseBtn.Parent = TitleBar
+    CollapseBtn.Size = UDim2.new(0, 30, 0, 30)
+    CollapseBtn.Position = UDim2.new(1, -35, 0, 2.5)
+    CollapseBtn.BackgroundColor3 = Color3.fromRGB(255, 80, 80)
+    CollapseBtn.BackgroundTransparency = 0.3
+    CollapseBtn.BorderSizePixel = 0
+    CollapseBtn.Text = "—"
+    CollapseBtn.TextColor3 = Color3.new(1, 1, 1)
+    CollapseBtn.TextSize = 20
+    CollapseBtn.Font = Enum.Font.GothamBold
+    CollapseBtn.AutoButtonColor = false
+    CollapseBtn.ZIndex = 3
+
+    local CollapseCorner = Instance.new("UICorner")
+    CollapseCorner.CornerRadius = UDim.new(0, 6)
+    CollapseCorner.Parent = CollapseBtn
+
+    -- 内容框架
+    ContentFrame.Name = "ContentFrame"
+    ContentFrame.Parent = MainFrame
+    ContentFrame.Size = UDim2.new(1, -20, 1, -50)
+    ContentFrame.Position = UDim2.new(0, 10, 0, 45)
+    ContentFrame.BackgroundTransparency = 1
+    ContentFrame.BorderSizePixel = 0
+
+    -- 布局
+    local Layout = Instance.new("UIListLayout")
+    Layout.Parent = ContentFrame
+    Layout.SortOrder = Enum.SortOrder.LayoutOrder
+    Layout.Padding = UDim.new(0, 8)
+
+    -- 自动攻击开关
+    AutoToggle.Name = "AutoToggle"
+    AutoToggle.Parent = ContentFrame
+    AutoToggle.Size = UDim2.new(1, 0, 0, 40)
+    AutoToggle.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    AutoToggle.BackgroundTransparency = 0.2
+    AutoToggle.BorderSizePixel = 0
+    AutoToggle.Text = "自动攻击: OFF"
+    AutoToggle.TextColor3 = Color3.fromRGB(255, 100, 100)
+    AutoToggle.TextSize = 16
+    AutoToggle.Font = Enum.Font.GothamSemibold
+    AutoToggle.AutoButtonColor = false
+
+    local ToggleCorner = Instance.new("UICorner")
+    ToggleCorner.CornerRadius = UDim.new(0, 6)
+    ToggleCorner.Parent = AutoToggle
+
+    -- 范围输入
+    RangeInput.Name = "RangeInput"
+    RangeInput.Parent = ContentFrame
+    RangeInput.Size = UDim2.new(1, 0, 0, 40)
+    RangeInput.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+    RangeInput.BackgroundTransparency = 0.2
+    RangeInput.BorderSizePixel = 0
+    RangeInput.Text = tostring(DEFAULT_RANGE)
+    RangeInput.PlaceholderText = "范围 (1-100)"
+    RangeInput.TextColor3 = Color3.fromRGB(200, 200, 255)
+    RangeInput.TextSize = 16
+    RangeInput.Font = Enum.Font.Gotham
+    RangeInput.ClearTextOnFocus = false
+
+    local RangeCorner = Instance.new("UICorner")
+    RangeCorner.CornerRadius = UDim.new(0, 6)
+    RangeCorner.Parent = RangeInput
+
+    -- 攻击所有玩家开关
+    AttackAllToggle.Name = "AttackAllToggle"
+    AttackAllToggle.Parent = ContentFrame
+    AttackAllToggle.Size = UDim2.new(1, 0, 0, 40)
+    AttackAllToggle.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    AttackAllToggle.BackgroundTransparency = 0.2
+    AttackAllToggle.BorderSizePixel = 0
+    AttackAllToggle.Text = "全体攻击: OFF"
+    AttackAllToggle.TextColor3 = Color3.fromRGB(255, 100, 100)
+    AttackAllToggle.TextSize = 16
+    AttackAllToggle.Font = Enum.Font.GothamSemibold
+    AttackAllToggle.AutoButtonColor = false
+
+    local AllCorner = Instance.new("UICorner")
+    AllCorner.CornerRadius = UDim.new(0, 6)
+    AllCorner.Parent = AttackAllToggle
+
+    -- 无敌模式开关
+    GodModeToggle.Name = "GodModeToggle"
+    GodModeToggle.Parent = ContentFrame
+    GodModeToggle.Size = UDim2.new(1, 0, 0, 40)
+    GodModeToggle.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    GodModeToggle.BackgroundTransparency = 0.2
+    GodModeToggle.BorderSizePixel = 0
+    GodModeToggle.Text = "无敌模式: OFF"
+    GodModeToggle.TextColor3 = Color3.fromRGB(255, 100, 100)
+    GodModeToggle.TextSize = 16
+    GodModeToggle.Font = Enum.Font.GothamSemibold
+    GodModeToggle.AutoButtonColor = false
+
+    local GodCorner = Instance.new("UICorner")
+    GodCorner.CornerRadius = UDim.new(0, 6)
+    GodCorner.Parent = GodModeToggle
+
+    -- 展开按钮（初始隐藏）
+    ExpandBtn.Name = "ExpandBtn"
+    ExpandBtn.Parent = Gui
+    ExpandBtn.Size = UDim2.new(0, 50, 0, 50)
+    ExpandBtn.Position = MainFrame.Position
+    ExpandBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+    ExpandBtn.BackgroundTransparency = 0.2
+    ExpandBtn.BorderSizePixel = 0
+    ExpandBtn.Text = "K"
+    ExpandBtn.TextColor3 = Color3.fromRGB(220, 220, 255)
+    ExpandBtn.TextSize = 24
+    ExpandBtn.Font = Enum.Font.GothamBold
+    ExpandBtn.Visible = false
+    ExpandBtn.ZIndex = 10
+
+    local ExpandCorner = Instance.new("UICorner")
+    ExpandCorner.CornerRadius = UDim.new(1, 0)  -- 圆形
+    ExpandCorner.Parent = ExpandBtn
+
+    local ExpandShadow = Instance.new("ImageLabel")
+    ExpandShadow.Name = "Shadow"
+    ExpandShadow.Parent = ExpandBtn
+    ExpandShadow.BackgroundTransparency = 1
+    ExpandShadow.Size = UDim2.new(1, 20, 1, 20)
+    ExpandShadow.Position = UDim2.new(0, -10, 0, -10)
+    ExpandShadow.Image = "rbxasset://textures/ui/Glow.png"
+    ExpandShadow.ImageColor3 = Color3.new(0, 0, 0)
+    ExpandShadow.ImageTransparency = 0.6
+    ExpandShadow.ScaleType = Enum.ScaleType.Slice
+    ExpandShadow.SliceCenter = Rect.new(10, 10, 10, 10)
+end
+
+-- 更新开关颜色/文本
+local function UpdateToggles()
+    if AutoAttackEnabled then
+        AutoToggle.Text = "自动攻击: ON"
+        AutoToggle.TextColor3 = Color3.fromRGB(100, 255, 100)
+    else
+        AutoToggle.Text = "自动攻击: OFF"
+        AutoToggle.TextColor3 = Color3.fromRGB(255, 100, 100)
+    end
+
+    if AttackAllEnabled then
+        AttackAllToggle.Text = "全体攻击: ON"
+        AttackAllToggle.TextColor3 = Color3.fromRGB(100, 255, 100)
+    else
+        AttackAllToggle.Text = "全体攻击: OFF"
+        AttackAllToggle.TextColor3 = Color3.fromRGB(255, 100, 100)
+    end
+
+    if GodModeEnabled then
+        GodModeToggle.Text = "无敌模式: ON"
+        GodModeToggle.TextColor3 = Color3.fromRGB(100, 255, 100)
+    else
+        GodModeToggle.Text = "无敌模式: OFF"
+        GodModeToggle.TextColor3 = Color3.fromRGB(255, 100, 100)
+    end
+end
+
+-- 拖动功能（主框架）
+local function setupDragging()
+    TitleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            Dragging = true
+            DragStartPos = UserInputService:GetMouseLocation()
+            FrameStartPos = Vector2.new(MainFrame.AbsolutePosition.X, MainFrame.AbsolutePosition.Y)
+
+            local connection
+            connection = RunService.Heartbeat:Connect(function()
+                if Dragging then
+                    local mousePos = UserInputService:GetMouseLocation()
+                    local delta = mousePos - DragStartPos
+                    local newPos = FrameStartPos + delta
+                    MainFrame.Position = UDim2.new(0, newPos.X, 0, newPos.Y)
+                else
+                    connection:Disconnect()
+                end
+            end)
+
+            UserInputService.InputEnded:Connect(function(endInput)
 
