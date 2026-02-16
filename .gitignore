@@ -287,4 +287,203 @@ local function setupDragging()
             end)
 
             UserInputService.InputEnded:Connect(function(endInput)
+                if endInput.UserInputType == Enum.UserInputType.MouseButton1 then
+                    Dragging = false
+                end
+            end)
+        end
+    end)
 
+    -- 展开按钮拖动
+    ExpandBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            ExpandDragging = true
+            ExpandDragStart = UserInputService:GetMouseLocation()
+            ExpandStartPos = Vector2.new(ExpandBtn.AbsolutePosition.X, ExpandBtn.AbsolutePosition.Y)
+
+            local connection
+            connection = RunService.Heartbeat:Connect(function()
+                if ExpandDragging then
+                    local mousePos = UserInputService:GetMouseLocation()
+                    local delta = mousePos - ExpandDragStart
+                    local newPos = ExpandStartPos + delta
+                    ExpandBtn.Position = UDim2.new(0, newPos.X, 0, newPos.Y)
+                else
+                    connection:Disconnect()
+                end
+            end)
+
+            UserInputService.InputEnded:Connect(function(endInput)
+                if endInput.UserInputType == Enum.UserInputType.MouseButton1 then
+                    ExpandDragging = false
+                end
+            end)
+        end
+    end)
+end
+
+-- 收起/展开逻辑
+local function setupCollapse()
+    CollapseBtn.MouseButton1Click:Connect(function()
+        MainFrame.Visible = false
+        ExpandBtn.Visible = true
+        -- 展开按钮移动到主框架当前位置
+        ExpandBtn.Position = MainFrame.Position
+    end)
+
+    ExpandBtn.MouseButton1Click:Connect(function()
+        MainFrame.Visible = true
+        ExpandBtn.Visible = false
+        -- 主框架移动到展开按钮当前位置
+        MainFrame.Position = ExpandBtn.Position
+    end)
+end
+
+-- 功能开关事件
+local function setupToggles()
+    AutoToggle.MouseButton1Click:Connect(function()
+        AutoAttackEnabled = not AutoAttackEnabled
+        UpdateToggles()
+    end)
+
+    AttackAllToggle.MouseButton1Click:Connect(function()
+        AttackAllEnabled = not AttackAllEnabled
+        UpdateToggles()
+    end)
+
+    GodModeToggle.MouseButton1Click:Connect(function()
+        GodModeEnabled = not GodModeEnabled
+        UpdateToggles()
+    end)
+
+    RangeInput.FocusLost:Connect(function()
+        local newRange = tonumber(RangeInput.Text)
+        if newRange and newRange > 0 then
+            Range = math.clamp(newRange, 1, 100)
+        else
+            Range = DEFAULT_RANGE
+        end
+        RangeInput.Text = tostring(Range)
+    end)
+end
+
+-- 攻击函数：发送Hit事件
+local function AttackTarget(targetCharacter)
+    if not targetCharacter or not targetCharacter:IsA("Model") then return end
+    -- 原参数：目标角色, 伤害, 范围, 冷却?, 速度?, false, true
+    local args = {
+        targetCharacter,
+        7,                -- 伤害
+        Range,            -- 使用UI范围
+        2,                -- 冷却（服务器可能检查，但我们高速发送）
+        0.15,             -- 速度
+        false,
+        true
+    }
+    local hitEvent = ReplicatedStorage:FindFirstChild("Hit")
+    if hitEvent then
+        hitEvent:FireServer(unpack(args))
+    end
+end
+
+-- 获取范围内最近的玩家（排除自己）
+local function GetClosestPlayerInRange()
+    local myChar = LocalPlayer.Character
+    if not myChar then return nil end
+    local myPos = myChar:FindFirstChild("HumanoidRootPart") and myChar.HumanoidRootPart.Position
+    if not myPos then return nil end
+
+    local closest = nil
+    local closestDist = Range + 1
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local char = player.Character
+            if char then
+                local root = char:FindFirstChild("HumanoidRootPart")
+                if root then
+                    local dist = (root.Position - myPos).Magnitude
+                    if dist <= Range and dist < closestDist then
+                        closestDist = dist
+                        closest = char
+                    end
+                end
+            end
+        end
+    end
+    return closest
+end
+
+-- 获取范围内所有玩家（排除自己）
+local function GetAllPlayersInRange()
+    local myChar = LocalPlayer.Character
+    if not myChar then return {} end
+    local myPos = myChar:FindFirstChild("HumanoidRootPart") and myChar.HumanoidRootPart.Position
+    if not myPos then return {} end
+
+    local targets = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local char = player.Character
+            if char then
+                local root = char:FindFirstChild("HumanoidRootPart")
+                if root and (root.Position - myPos).Magnitude <= Range then
+                    table.insert(targets, char)
+                end
+            end
+        end
+    end
+    return targets
+end
+
+-- 自动攻击循环
+local function AutoAttackLoop()
+    while true do
+        if AutoAttackEnabled and LocalPlayer.Character then
+            if AttackAllEnabled then
+                -- 攻击范围内所有玩家
+                local targets = GetAllPlayersInRange()
+                for _, target in ipairs(targets) do
+                    AttackTarget(target)
+                    task.wait(0.005) -- 极短间隔，避免事件阻塞
+                end
+            else
+                -- 攻击最近玩家
+                local target = GetClosestPlayerInRange()
+                if target then
+                    AttackTarget(target)
+                end
+            end
+        end
+        task.wait(ATTACK_COOLDOWN)
+    end
+end
+
+-- 无敌模式循环（持续回血）
+local function GodModeLoop()
+    while true do
+        if GodModeEnabled and LocalPlayer.Character then
+            local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                humanoid.Health = humanoid.MaxHealth
+            end
+        end
+        task.wait(GODMODE_INTERVAL)
+    end
+end
+
+-- 启动所有功能
+local function Start()
+    CreateUI()
+    setupDragging()
+    setupCollapse()
+    setupToggles()
+    UpdateToggles()
+
+    -- 启动循环（协程）
+    coroutine.wrap(AutoAttackLoop)()
+    coroutine.wrap(GodModeLoop)()
+end
+
+-- 执行
+Start()
